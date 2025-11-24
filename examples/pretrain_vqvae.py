@@ -41,8 +41,9 @@ def main(cfg):
     )
     for epoch in tqdm.trange(cfg.epochs):
         for data in tqdm.tqdm(train_loader):
-            obs, act, goal = (x.to(cfg.device) for x in data)
-
+            print(data)
+            obs = data["obs"].to(cfg.device)
+            act = data["target_actions"].to(cfg.device)
             (
                 encoder_loss,
                 vq_loss_state,

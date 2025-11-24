@@ -1,0 +1,92 @@
+defaults:
+  - env_vars: env_vars
+  - _self_
+
+seed: 42
+window_size: 10
+action_window_size: 1
+
+# Training Hyperparameters
+batch_size: 256 # Reduced from 2048 (LeRobot data is heavier)
+epochs: 1000
+eval_freq: 10
+eval_on_env_freq: 200
+num_env_evals: 20
+num_final_evals: 20
+
+# 🔑 CRITICAL: Update this path!
+# Copy the path from the output of your pretrain_vqvae.py run (e.g., .../checkpoints/vqvae_aloha_insertion/YYYY-MM-DD/HH-MM-SS/trained_vqvae.pt)
+vqvae_load_dir: "YOUR_PATH_TO_PRETRAINED_VQVAE/trained_vqvae.pt"
+
+wandb:
+  project: "vq-bet-policy"
+  entity: "dhruv-101-iit-delhi"
+
+device: cuda
+optim:
+  lr: 5.5e-5
+  weight_decay: 2e-4
+  betas: [0.9, 0.999]
+
+env:
+  # Dimensions for LeRobot ALOHA (Bimanual)
+  # State: 14 dims (joint positions)
+  # Goal: 14 dims (target joint positions)
+  # Total Obs: 28 dims (State + Goal concatenated by dataset.py)
+  obs_dim: 28
+  act_dim: 14 # 14 dims (2 arms x 7 DoF) - Update to 7 if using single arm
+
+  # We handle goal conditioning via early fusion (concatenation) in dataset.py
+  # so we tell the model the goal_dim is 0, but the obs_dim includes the goal.
+  goal_dim: 0
+
+data:
+  # 🔑 Connect to the new function in dataset.py
+  _target_: dataset.get_lerobot_train_val
+
+  # 🔑 Use the LeRobot Repo ID
+  repo_id: ${env_vars.datasets.aloha_insertion_dataset}
+
+  window_size: ${window_size}
+  action_window_size: ${action_window_size}
+
+  # Set to false to use state-based training (matches your dataset.py logic)
+  visual_input: false
+
+save_every: 10
+save_path: "${env_vars.save_path}/checkpoints/vqbet_aloha_insertion/${now:%Y-%m-%d}/${now:%H-%M-%S}"
+load_path: null
+
+model:
+  _target_: vq_behavior_transformer.BehaviorTransformer
+  obs_dim: ${env.obs_dim}
+  act_dim: ${env.act_dim}
+  goal_dim: ${env.goal_dim}
+  obs_window_size: ${window_size}
+  act_window_size: ${action_window_size}
+  sequentially_select: false
+  visual_input: false
+  finetune_resnet: false
+
+  gpt_model:
+    _target_: vq_behavior_transformer.GPT
+    config:
+      _target_: vq_behavior_transformer.GPTConfig
+      block_size: 110 # Slightly larger block size for safety
+      input_dim: ${env.obs_dim}
+      n_layer: 6
+      n_head: 6
+      n_embd: 120
+
+  vqvae_model:
+    _target_: vqvae.VqVae
+    input_dim_h: ${action_window_size}
+    input_dim_w: ${env.act_dim}
+    n_latent_dims: 512
+    vqvae_n_embed: 16
+    vqvae_groups: 2
+    eval: true
+    device: ${device}
+    load_dir: ${vqvae_load_dir} # Loads the trained VQ-VAE
+
+  offset_loss_multiplier: 100

@@ -1,168 +1,87 @@
-# Copyright 2018 The TensorFlow Authors All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
-"""Wrapper for creating the ant environment in gym_mujoco."""
-
-import math
 import numpy as np
-import mujoco_py
+import math
 from gym import utils
 from gym.envs.mujoco import mujoco_env
+import gym
+#TODO
 
+class AlohaInsertionEnv(mujoco_env.MujocoEnv, utils.EzPickle):
+    # This should point to your specific ALOHA model file
+    FILE = "aloha.xml"
 
-def q_inv(a):
-    return [a[0], -a[1], -a[2], -a[3]]
+    # Define the default frame skip (e.g., 5 steps per action)
+    DEFAULT_CAMERA_NAME = "main_cam"
 
+    # The number of steps to skip per action.
+    FRAME_SKIP = 5
 
-def q_mult(a, b):  # multiply two quaternion
-    w = a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3]
-    i = a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2]
-    j = a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1]
-    k = a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0]
-    return [w, i, j, k]
-
-
-class AntEnv(mujoco_env.MujocoEnv, utils.EzPickle):
-    FILE = "ant.xml"
-    ORI_IND = 3
-
-    def __init__(
-        self,
-        file_path=None,
-        expose_all_qpos=True,
-        expose_body_coms=None,
-        expose_body_comvels=None,
-        seed=0,
-    ):
-        self._expose_all_qpos = expose_all_qpos
-        self._expose_body_coms = expose_body_coms
-        self._expose_body_comvels = expose_body_comvels
-        self._body_com_indices = {}
-        self._body_comvel_indices = {}
-        self.rng = np.random.RandomState(seed)
-
-        mujoco_env.MujocoEnv.__init__(self, file_path, 5)
+    def __init__(self, file_path=None, seed=0):
+        # Initialize parent classes
+        mujoco_env.MujocoEnv.__init__(self, file_path or self.FILE, self.FRAME_SKIP)
         utils.EzPickle.__init__(self)
 
-    @property
-    def physics(self):
-        # check mujoco version is greater than version 1.50 to call correct physics
-        # model containing PyMjData object for getting and setting position/velocity
-        # check https://github.com/openai/mujoco-py/issues/80 for updates to api
-        if mujoco_py.get_version() >= "1.50":
-            return self.sim
-        else:
-            return self.model
+        self.rng = np.random.RandomState(seed)
 
-    def _step(self, a):
-        return self.step(a)
+        self.env = gym.make("gym_aloha/AlohaInsertion-v0", obs_type="pixels_agent_pos")
+        self.obs = None
+        self.reward = 0
+        self.terminated = False
+        print(f"Aloha Insertion Environment initialized.")
+        print(f"Action space dimension (nv): {self.model.nv}")
 
-    def step(self, a):
-        xposbefore = self.get_body_com("torso")[0]
-        self.do_simulation(a, self.frame_skip)
+    # --- Core Environment Methods ---
 
-        # stochasticity
-        # qpos = np.copy(self.physics.data.qpos)
-        # qvel = np.copy(self.physics.data.qvel)
-        # qpos[:2] += self.rng.normal(scale=0.05, size=2)
-        # self.set_state(qpos, qvel)
-
-        xposafter = self.get_body_com("torso")[0]
-        forward_reward = (xposafter - xposbefore) / self.dt
-        ctrl_cost = 0.5 * np.square(a).sum()
-        survive_reward = 1.0
-        reward = forward_reward - ctrl_cost + survive_reward
-        state = self.state_vector()
-        done = False
-        ob = self._get_obs()
-        return (
-            ob,
-            reward,
-            done,
-            dict(
-                reward_forward=forward_reward,
-                reward_ctrl=-ctrl_cost,
-                reward_survive=survive_reward,
-            ),
-        )
-
-    def _get_obs(self):
-        # No cfrc observation
-        if self._expose_all_qpos:
-            obs = np.concatenate(
-                [
-                    self.data.qpos.flat[:15],  # Ensures only ant obs.
-                    self.data.qvel.flat[:14],
-                ]
-            )
-        else:
-            obs = np.concatenate(
-                [
-                    self.data.qpos.flat[2:15],
-                    self.data.qvel.flat[:14],
-                ]
-            )
-
-        if self._expose_body_coms is not None:
-            for name in self._expose_body_coms:
-                com = self.get_body_com(name)
-                if name not in self._body_com_indices:
-                    indices = range(len(obs), len(obs) + len(com))
-                    self._body_com_indices[name] = indices
-                obs = np.concatenate([obs, com])
-
-        if self._expose_body_comvels is not None:
-            for name in self._expose_body_comvels:
-                comvel = self.get_body_comvel(name)
-                if name not in self._body_comvel_indices:
-                    indices = range(len(obs), len(obs) + len(comvel))
-                    self._body_comvel_indices[name] = indices
-                obs = np.concatenate([obs, comvel])
-        return obs
+    def step(self, action):
+        """
+        Applies the action and advances the simulation.
+        """
+        obs, reward, terminated, truncated, info = self.env.step(action_np)
+        self.obs = obs
+        self.reward = reward
+        self.terminated = terminated
+        return obs, reward, terminated, info
 
     def reset_model(self):
-        qpos = self.init_qpos + self.rng.uniform(size=self.model.nq, low=-0.1, high=0.1)
-        qvel = self.init_qvel + self.rng.randn(self.model.nv) * 0.1
+        """
+        Resets the robot to a starting configuration with slight randomization.
+        """
+        obs, info = self.env.reset()
+        self.obs = obs
+        return obs
 
-        # Set everything other than ant to original position and 0 velocity.
-        qpos[15:] = self.init_qpos[15:]
-        qvel[14:] = 0.0
-        self.set_state(qpos, qvel)
-        return self._get_obs()
+    def _get_obs(self):
+        """
+        Gathers the necessary state and vision observations.
+        For VQ-BeT, the primary observation is the image, but we include state here.
+        """
+        return self.obs
 
-    def get_ori(self):
-        ori = [0, 1, 0, 0]
-        rot = self.physics.data.qpos[
-            self.__class__.ORI_IND : self.__class__.ORI_IND + 4
-        ]  # take the quaternion
-        ori = q_mult(q_mult(rot, ori), q_inv(rot))[1:3]  # project onto x-y plane
-        ori = math.atan2(ori[1], ori[0])
-        return ori
+    # --- Reward and Termination Logic ---
 
-    def set_xy(self, xy):
-        qpos = np.copy(self.physics.data.qpos)
-        qpos[0] = xy[0]
-        qpos[1] = xy[1]
+    def _get_reward_and_info(self):
+        """
+        Calculates the reward for the current timestep based on task progress.
+        """
 
-        qvel = self.physics.data.qvel
-        self.set_state(qpos, qvel)
+        info_rewards = {
+            "reward" : 0
+        }
 
-    def get_xy(self):
-        return self.physics.data.qpos[:2]
+        return self.reward, info_rewards
 
-    def viewer_setup(self):
-        self.viewer.cam.trackbodyid = -1
-        self.viewer.cam.distance = 50
-        self.viewer.cam.elevation = -90
+    def _is_done(self):
+        """
+        Checks if the episode should terminate.
+        """
+        return self.terminated
+
+    # def get_body_com(self, name):
+    #     """Get the center of mass (COM) of a specific body."""
+    #     body_id = self.model.body_names.index(name)
+    #     return self.data.body_xpos[body_id]
+
+    # ... You can add other helper methods like rendering setup, etc.
+
+# NOTE: The actual VQ-BeT training pipeline will use a DataLoader to wrap this
+# environment or load the pre-recorded LeRobotDataset, as VQ-BeT is a
+# Offline Reinforcement Learning / Imitation Learning algorithm.
