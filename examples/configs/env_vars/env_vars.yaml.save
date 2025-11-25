@@ -1,0 +1,9 @@
+
+save_path: /home/ghost404/PycharmProjects/Bimanual_policies/vq_bet_runs
+
+wandb_entity: dhruv-101-iit-delhi
+
+dataset_pathies/vq_bet_datasets_local # 🔴 OPTIONAL: Set a placeholder path
+
+datasets:
+    aloha_insertion_dataset:  lerobot/aloha_sim_insertion_human

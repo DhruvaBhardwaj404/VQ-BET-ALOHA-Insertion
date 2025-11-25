@@ -41,9 +41,8 @@ def main(cfg):
     )
     for epoch in tqdm.trange(cfg.epochs):
         for data in tqdm.tqdm(train_loader):
-            print(data)
-            obs = data["obs"].to(cfg.device)
-            act = data["target_actions"].to(cfg.device)
+            obs = data['obs'].to(cfg.device)
+            act = data['target_actions'].to(cfg.device)
             (
                 encoder_loss,
                 vq_loss_state,
@@ -58,10 +57,8 @@ def main(cfg):
             wandb.log({"pretrain/encoder_loss": encoder_loss})
             wandb.log({"pretrain/vq_loss_state": vq_loss_state})
             wandb.log({"pretrain/vqvae_recon_loss": vqvae_recon_loss})
-
-        if epoch % 50 == 0:
-            state_dict = vqvae_model.state_dict()
-            torch.save(state_dict, os.path.join(save_path, "trained_vqvae.pt"))
+        state_dict = vqvae_model.state_dict()
+        torch.save(state_dict, os.path.join(save_path, "trained_vqvae.pt"))
 
 
 if __name__ == "__main__":

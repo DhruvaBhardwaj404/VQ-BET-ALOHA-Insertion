@@ -1,25 +1,31 @@
 defaults:
-  - env_vars: env_vars # Loads env_vars.yaml for paths and entity
+  - env_vars: env_vars 
   - _self_
 
+# =======================
+# VQ-VAE Model Definition
+# =======================
 vqvae_model:
   _target_: vqvae.VqVae
-  input_dim_h: 1
-  input_dim_w: 14
+  input_dim_h: 16
+  input_dim_w: 14 
   n_latent_dims: 512
   vqvae_n_embed: 16
   vqvae_groups: 2
   eval: false
-  device: cuda # Hardcoding 'cuda' for this test
+  device: cuda
 
+# =======================
+# Global/Training Parameters
+# =======================
 seed: 42
-batch_size: 128 # Smaller batch size for visual training (GPU VRAM conscious)
-epochs: 1000
-action_window_size: 16 # Chunk size for action prediction (16 steps = 0.53 seconds at 30Hz)
+batch_size: 128
+epochs: 10
+action_window_size: 16 # T_action
 
 wandb:
   project: "vq-bet-policy"
-  entity: ${env_vars.wandb_entity} # Uses the entity defined in env_vars.yaml
+  entity: ${env_vars.wandb_entity}
 
 device: cuda
 optim:
@@ -28,55 +34,66 @@ optim:
   betas: [0.9, 0.999]
 
 env:
-  # The output dimension of the ResNet visual encoder
   obs_dim: 512
   act_dim: 14
-
-data:
-  # Uses the custom LeRobot data loading function
-  _target_: dataset.get_lerobot_train_val
-  # Uses the Hugging Face repository ID defined in env_vars.yaml
-  repo_id: ${env_vars.datasets.aloha_insertion_dataset}
-  window_size: 16
-  action_window_size: ${action_window_size}
-  visual_input: true
 
 save_every: 20
 save_path: "${env_vars.save_path}/checkpoints/vqbet_aloha_insertion/${now:%Y-%m-%d}/${now:%H-%M-%S}"
 
-# --- VQ-BeT Policy Model Definition ---
+# =======================
+# 🖼️ Image Transforms List (Instantiated by Hydra) 
+# =======================
+transforms_list:
+  - _target_: torchvision.transforms.Resize 
+    size: [224, 224] 
+  - _target_: torchvision.transforms.RandomCrop 
+    size: [224, 224] 
+  - _target_: torchvision.transforms.Normalize
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+# =======================
+# Data Loading Configuration
+# =======================
+data:
+  _target_: dataset.get_lerobot_train_val
+  repo_id: ${env_vars.datasets.aloha_insertion_dataset}
+  window_size: 16
+  action_window_size: ${action_window_size}
+  visual_input: true
+  
+  # Pass the list to the custom 'transform_list' argument defined in dataset.py
+  transform_list: ${transforms_list} 
+
+# =======================
+# VQ-BeT Policy Model Definition
+# =======================
 model:
   _target_: vq_behavior_transformer.VQBehaviorTransformer
-
-  # Policy Core Parameters
+  
   action_dim: ${env.act_dim}
   obs_dim: ${env.obs_dim}
-  # Total number of discrete actions/skills learned by the VQ-VAE (16 codes ^ 2 groups)
   n_action_codes: 256
   action_chunk_size: ${action_window_size}
 
-  # Transformer Parameters (Standard VQ-BeT/ACT settings)
   d_model: 512
   n_heads: 8
   d_ff: 2048
   n_layers: 4
   dropout: 0.1
 
-  # Visual/ResNet Parameters
   visual_input: true
-  finetune_resnet: false # Freezes the ResNet weights
+  finetune_resnet: false 
 
-  # 🚨 CRITICAL: Load the VQ-VAE Checkpoint 🚨
-  # REPLACE THIS ENTIRE PATH WITH THE ABSOLUTE LOCATION OF YOUR TRAINED VQ-VAE FILE!
   vqvae_checkpoint_path: /path/to/your/actual/vqvae/checkpoint_final.pt
 
-# --- Training Specifics ---
+# =======================
+# Loss and Training Specifics
+# =======================
 training:
   log_freq: 50
   scheduler: cosine_annealing
   gradient_clip: 1.0
 
-# --- Loss Parameters ---
-# Policy training is a classification task predicting the action code.
 loss:
   _target_: torch.nn.CrossEntropyLoss

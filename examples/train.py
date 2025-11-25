@@ -8,13 +8,12 @@ import numpy as np
 import torch
 import tqdm
 from omegaconf import OmegaConf
-
-import kitchen_env
+import aloha_insertion_env
 import wandb
 from video import VideoRecorder
 import pickle
 
-config_name = "train_ant_goalcond"
+config_name = "train_aloha_insertion"
 
 if "MUJOCO_GL" not in os.environ:
     os.environ["MUJOCO_GL"] = "egl"
