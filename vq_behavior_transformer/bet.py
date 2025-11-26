@@ -273,73 +273,109 @@ class BehaviorTransformer(nn.Module):
             sampled_offsets, "NT (W A) -> NT W A", W=self._vqvae_model.input_dim_h
         )
         predicted_action = decoded_action + sampled_offsets
+        # This entire block is assumed to be inside the model's forward/predict function,
+        # where 'obs_seq' is available and 'predicted_action' is the model's output.
+
         if action_seq is not None:
-            n, total_w, act_dim = action_seq.shape
-            act_w = self._vqvae_model.input_dim_h
-            obs_w = total_w + 1 - act_w
-            output_shape = (n, obs_w, act_w, act_dim)
-            output = torch.empty(output_shape).to(action_seq.device)
-            for i in range(obs_w):
-                output[:, i, :, :] = action_seq[:, i : i + act_w, :]
-            action_seq = einops.rearrange(output, "N T W A -> (N T) W A")
+            # Get N (Batch Size) and T_obs (Observation Sequence Length)
+            N = action_seq.shape[0]
+
+            # 🚨 CRITICAL FIX: Determine T_obs from the observation tensor.
+            # We assume 'obs_seq' is the tensor holding the observation history.
+            # The check below is good practice if obs_seq is an implicit input.
+            if 'obs_seq' not in locals() and 'obs_seq' not in globals():
+                raise RuntimeError(
+                    "Missing 'obs_seq' tensor to determine the necessary T_obs (Observation Sequence Length) for action tiling.")
+
+            T_obs = obs_seq.shape[1]  # T_obs is the observation sequence length, e.g., 16
+
+            # 1. Tile the action sequence (action_seq) to match the required N * T_obs batch size.
+            # action_seq shape: (N, W_act, A), e.g., (16, 16, 14)
+            # Target shape: (N * T_obs, W_act, A), e.g., (256, 16, 14)
+
+            # Add a T_obs dimension and repeat: (N, 1, W_act, A) -> (N, T_obs, W_act, A)
+            action_seq_tiled = action_seq.unsqueeze(1).repeat(1, T_obs, 1, 1)
+
+            # Flatten N and T_obs: (N * T_obs, W_act, A)
+            action_seq = einops.rearrange(action_seq_tiled, "N T W A -> (N T) W A")
+            # action_seq is now (N * T_obs, W_act, A), e.g., (256, 16, 14)
+
             # Figure out the loss for the actions.
             # First, we need to find the closest cluster center for each action.
             state_vq, action_bins = self._vqvae_model.get_code(
                 action_seq
-            )  # action_bins: NT, G
+            )  # action_bins: (N * T_obs), G
 
-            # Now we can compute the loss.
-            if action_seq.ndim == 2:
-                action_seq = action_seq.unsqueeze(0)
+            # --- ACTION LOSSES ---
 
+            # ⚠️ FIX 1: The tiling already ensures the correct 3D shape, so this check is redundant and potentially wrong.
+            # if action_seq.ndim == 2:
+            #     action_seq = action_seq.unsqueeze(0)
+
+            # L1 Loss for the predicted action vs. the ground truth target
             offset_loss = torch.nn.L1Loss()(action_seq, predicted_action)
 
+            # ⚠️ FIX 2: Replace all instances of 'T=obs_w' with 'T=T_obs' in einops.rearrange for loss calculations.
+            # Re-arranging (N*T_obs, W, A) back to (N, T_obs, W, A) for specific loss comparisons.
+
+            # MSE loss for the *first step* of the *last predicted window* (Rollout comparison)
             action_diff = F.mse_loss(
-                einops.rearrange(action_seq, "(N T) W A -> N T W A", T=obs_w)[
-                    :, -1, 0, :
+                einops.rearrange(action_seq, "(N T) W A -> N T W A", T=T_obs)[
+                :, -1, 0, :
                 ],
-                einops.rearrange(predicted_action, "(N T) W A -> N T W A", T=obs_w)[
-                    :, -1, 0, :
+                einops.rearrange(predicted_action, "(N T) W A -> N T W A", T=T_obs)[
+                :, -1, 0, :
                 ],
-            )  # batch, time, windowsize (t ... t+N), action dim -> [:, -1, 0, :] is for rollout
+            )
+
+            # MSE loss for the *entire last predicted window*
             action_diff_tot = F.mse_loss(
-                einops.rearrange(action_seq, "(N T) W A -> N T W A", T=obs_w)[
-                    :, -1, :, :
+                einops.rearrange(action_seq, "(N T) W A -> N T W A", T=T_obs)[
+                :, -1, :, :
                 ],
-                einops.rearrange(predicted_action, "(N T) W A -> N T W A", T=obs_w)[
-                    :, -1, :, :
+                einops.rearrange(predicted_action, "(N T) W A -> N T W A", T=T_obs)[
+                :, -1, :, :
                 ],
-            )  # batch, time, windowsize (t ... t+N), action dim -> [:, -1, 0, :] is for rollout
+            )
+
+            # Mean L1 diff between *decoded* action and target (Resolution 1 check)
             action_diff_mean_res1 = (
                 abs(
-                    einops.rearrange(action_seq, "(N T) W A -> N T W A", T=obs_w)[
-                        :, -1, 0, :
+                    einops.rearrange(action_seq, "(N T) W A -> N T W A", T=T_obs)[
+                    :, -1, 0, :
                     ]
-                    - einops.rearrange(decoded_action, "(N T) W A -> N T W A", T=obs_w)[
-                        :, -1, 0, :
-                    ]
+                    - einops.rearrange(decoded_action, "(N T) W A -> N T W A", T=T_obs)[
+                      # Assumes 'decoded_action' is available
+                      :, -1, 0, :
+                      ]
                 )
             ).mean()
+
+            # Mean L1 diff between *predicted* action and target (Resolution 2 check)
             action_diff_mean_res2 = (
                 abs(
-                    einops.rearrange(action_seq, "(N T) W A -> N T W A", T=obs_w)[
-                        :, -1, 0, :
+                    einops.rearrange(action_seq, "(N T) W A -> N T W A", T=T_obs)[
+                    :, -1, 0, :
                     ]
                     - einops.rearrange(
-                        predicted_action, "(N T) W A -> N T W A", T=obs_w
+                        predicted_action, "(N T) W A -> N T W A", T=T_obs
                     )[:, -1, 0, :]
                 )
             ).mean()
+
+            # Max L1 diff between *predicted* action and target
             action_diff_max = (
                 abs(
-                    einops.rearrange(action_seq, "(N T) W A -> N T W A", T=obs_w)[
-                        :, -1, 0, :
+                    einops.rearrange(action_seq, "(N T) W A -> N T W A", T=T_obs)[
+                    :, -1, 0, :
                     ]
                     - einops.rearrange(
-                        predicted_action, "(N T) W A -> N T W A", T=obs_w
+                        predicted_action, "(N T) W A -> N T W A", T=T_obs
                     )[:, -1, 0, :]
                 )
             ).max()
+
+            # --- CBET LOSSES (Cross-Entropy) ---
 
             if self.sequentially_select:
                 cbet_loss1 = self._criterion(  # F.cross_entropy
@@ -366,7 +402,6 @@ class BehaviorTransformer(nn.Module):
                     action_bins[:, 1],
                 )
             cbet_loss = cbet_loss1 * 5 + cbet_loss2 * self._secondary_code_multiplier
-
             equal_total_code_rate = (
                 torch.sum(
                     (
