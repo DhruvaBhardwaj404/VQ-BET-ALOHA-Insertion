@@ -17,7 +17,6 @@ num_final_eval_per_goal: 5
 action_window_size: 16        # T_act: Action chunk length (usually 1 for policy)
 sequentially_select: false
 
-# 🔑 CRITICAL: Set for single-task, state-only Aloha
 goal_dim: 0                  # 0 for non-goal-conditioned or single-task (will use 'future' obs goal)
 visual_input: true           # ⬅️ SET TO TRUE FOR VISUAL TRAINING
 vqvae_load_dir: vq_bet_runs/checkpoints/vqbet_aloha_insertion/2025-11-26/02-19-19/major-voice-169/trained_vqvae.pt
@@ -35,23 +34,19 @@ optim:
 # --- Environment Configuration ---
 env:
   gym:
-    # 🔑 CHANGE: Target our custom wrapper and its ID
     _target_: aloha_insertion_env.ALOHAWRAPPER 
     id: AlohaInsertion-eval-v0
     visual_input: ${visual_input}
     goal_dim: ${goal_dim}
-  
-  # 🔑 CHANGE: Set dimensions specific to ALOHA Insertion
+
   obs_dim: 512         # D_obs: Low-dimensional state size (e.g., qpos+qvel)
   act_dim: 14         # D_act: Raw action size
   goal_dim: ${goal_dim}
 
 # --- Data Configuration ---
 data:
-  # 🔑 CHANGE: Target our custom dataset loading function (from dataset.py)
   _target_: dataset.get_lerobot_train_val
-  
-  # 🔑 CHANGE: Use the correct dataset repo ID
+
   repo_id: ${env_vars.datasets.aloha_insertion_dataset}
   
   goal_conditional: future
@@ -62,7 +57,6 @@ data:
   visual_input: ${visual_input}
   vqbet_get_future_action_chunk: true
 
-  # 🖼️ VISUAL: Image Transforms (must match VAE pretraining)
   transform_list:
     - _target_: torchvision.transforms.ToTensor
     - _target_: torchvision.transforms.Resize
@@ -101,7 +95,6 @@ model:
       n_layer: 6
       n_head: 6
       n_embd: 120
-      # ⚠️ n_codes was removed as per the previous correction
 
   vqvae_model:
     _target_: vqvae.VqVae
@@ -117,10 +110,7 @@ model:
 
 # --- Goal Function Configuration ---
 goal_fn:
-  # 🔑 CHANGE: Target our custom goal function (from aloha_insertion_env.py)
   _target_: aloha_insertion_env.get_goal_fn
-  
-  # 🔑 CHANGE: Use the correct dataset repo ID for the goal function
   data_directory: ${env_vars.datasets.aloha_insertion_dataset}
   
   goal_conditional: ${data.goal_conditional}

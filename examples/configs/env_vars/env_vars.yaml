@@ -1,9 +1,9 @@
 
-save_path: /home/dhruv/VQ-BET-ALOHA-Insertion/vq_bet_runs
+save_path: ~/VQ-BET-ALOHA-Insertion/vq_bet_runs
 
-wandb_entity: dhruv-101-iit-delhi
+wandb_entity: "your_wandb_entity"
 
-dataset_path: /home/dhruv/VQ-BET-ALOHA-Insertion/vq_bet_datasets_local 
+dataset_path: ~/VQ-BET-ALOHA-Insertion/vq_bet_datasets_local
 
 datasets:
     aloha_insertion_dataset:  lerobot/aloha_sim_insertion_human

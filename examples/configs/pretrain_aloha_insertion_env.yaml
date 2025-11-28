@@ -2,9 +2,6 @@ defaults:
   - env_vars: env_vars 
   - _self_
 
-# =======================
-# VQ-VAE Model Definition
-# =======================
 vqvae_model:
   _target_: vqvae.VqVae
   input_dim_h: 16
@@ -15,9 +12,6 @@ vqvae_model:
   eval: false
   device: cuda
 
-# =======================
-# Global/Training Parameters
-# =======================
 seed: 42
 batch_size: 128
 epochs: 10
@@ -40,9 +34,6 @@ env:
 save_every: 20
 save_path: "${env_vars.save_path}/checkpoints/vqbet_aloha_insertion/${now:%Y-%m-%d}/${now:%H-%M-%S}"
 
-# =======================
-# 🖼️ Image Transforms List (Instantiated by Hydra) 
-# =======================
 transforms_list:
   - _target_: torchvision.transforms.Resize 
     size: [224, 224] 
@@ -52,22 +43,15 @@ transforms_list:
     mean: [0.485, 0.456, 0.406]
     std: [0.229, 0.224, 0.225]
 
-# =======================
-# Data Loading Configuration
-# =======================
+
 data:
   _target_: dataset.get_lerobot_train_val
   repo_id: ${env_vars.datasets.aloha_insertion_dataset}
   window_size: 16
   action_window_size: ${action_window_size}
   visual_input: true
-  
-  # Pass the list to the custom 'transform_list' argument defined in dataset.py
-  transform_list: ${transforms_list} 
+  transform_list: ${transforms_list}
 
-# =======================
-# VQ-BeT Policy Model Definition
-# =======================
 model:
   _target_: vq_behavior_transformer.VQBehaviorTransformer
   
@@ -81,15 +65,10 @@ model:
   d_ff: 2048
   n_layers: 4
   dropout: 0.1
-
   visual_input: true
-  finetune_resnet: false 
-
+  finetune_resnet: false
   vqvae_checkpoint_path: /path/to/your/actual/vqvae/checkpoint_final.pt
 
-# =======================
-# Loss and Training Specifics
-# =======================
 training:
   log_freq: 50
   scheduler: cosine_annealing

@@ -7,10 +7,6 @@ from torchvision.transforms import Compose, ToTensor
 from typing import List, Tuple, Any, Dict
 
 
-# ==========================================================
-# 1. CUSTOM TRANSFORM UTILITY (UNCHANGED)
-# ==========================================================
-
 class CustomCompose(Compose):
     def __call__(self, tensors: List[Any]) -> Tuple[Any, ...]:
         if not isinstance(tensors, (list, tuple)) or not tensors:
@@ -19,9 +15,6 @@ class CustomCompose(Compose):
         return tuple([transformed_image] + list(tensors[1:]))
 
 
-# ==========================================================
-# 2. DATASET WRAPPER (CRITICAL ACTION FIX APPLIED)
-# ==========================================================
 
 class LeRobotWrapper(Dataset):
 
@@ -80,9 +73,6 @@ class LeRobotWrapper(Dataset):
         obs = data[self.obs_key].float()
         actions = data[self.act_key].float()
 
-        # =======================================================================
-        # 💥 CRITICAL FIX: ENSURE ACTION TENSOR IS EXACTLY [T_act, D_act]
-        # =======================================================================
         T_act = self.action_window_size  # (e.g., 16)
         D_act = actions.shape[-1]  # (e.g., 14)
 
@@ -113,7 +103,6 @@ class LeRobotWrapper(Dataset):
                 f"Action tensor failure for item {idx}. "
                 f"Observed steps: {N_current_steps}. Expected steps: {T_act}."
             )
-        # =======================================================================
 
         mask = torch.ones(obs.shape[0], dtype=torch.bool)
         tensors = [obs, actions, mask]
@@ -142,10 +131,6 @@ class LeRobotWrapper(Dataset):
 
         return output_dict
 
-
-# ==========================================================
-# 3. DATA LOADING FUNCTION (Hydra Target) - UNCHANGED
-# ==========================================================
 
 def get_lerobot_train_val(
         repo_id: str,
