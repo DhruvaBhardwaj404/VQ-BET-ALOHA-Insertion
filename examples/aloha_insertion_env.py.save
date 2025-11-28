@@ -1,0 +1,270 @@
+import logging
+from typing import Callable, Dict, Optional, Tuple, Union, Any
+import numpy as np
+import torch
+import gymnasium as gym
+import gym_aloha
+from gymnasium.envs.registration import register
+# 🔑 CORRECTED: The class name for the trajectory dataset wrapper is LeRobotWrapper,
+# assuming it is the main class used for loading trajectories from dataset.py.
+from dataset import LeRobotWrapper
+import einops
+
+# Setup logging
+logging.basicConfig(
+    level="INFO",
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+
+
+def get_split_idx(l, seed, train_fraction=0.95):
+    """Utility function for splitting dataset indices."""
+    rng = torch.Generator().manual_seed(seed)
+    idx = torch.randperm(l, generator=rng).tolist()
+    l_train = int(l * train_fraction)
+    return idx[:l_train], idx[l_train:]
+
+
+class ALOHAWRAPPER(gym.Wrapper):
+    """
+    Custom wrapper for the Aloha Insertion environment to modify the observation
+    space to return a tuple of (image, low-dimensional state) when visual_input is True.
+    """
+
+    def __init__(self, id: str, goal_dim: int = 0, visual_input: bool = False, **kwargs):
+        self.id = id
+        self.visual_input = visual_input # Store visual_input flag
+        
+        # Initialize the base environment
+        self.env = gym.make("gym_aloha/AlohaInsertion-v0") 
+        self.observation_space = self.env.observation_space 
+
+        self.goal_masking = True
+        self._goal_onehot: Optional[np.ndarray] = None
+        self.tasks_to_complete = ["insertion"]
+
+        super().__init__(self.env) 
+
+    def set_task_goal(self, one_hot_indices: torch.Tensor):
+        """Sets the goal state for the environment using the one-hot goal."""
+        self._goal_onehot = one_hot_indices.cpu().numpy() 
+        logging.info("ALOHA set_task_goal called. Goal onehot set.")
+
+    def set_goal_masking(self, goal_masking=True):
+        self.goal_masking = goal_masking
+
+    def _process_obs(self, obs_dict: Dict[str, Any]): 
+        """Helper to extract and format observation (image and state) based on visual_input flag."""        
+        # Extract low-dimensional state (qpos and qvel)
+        # Assuming these keys exist in the gym-aloha observation dictionary
+        qpos = obs_dict.get('qpos', np.array([]))
+        qvel = obs_dict.get('qvel', np.array([]))
+        # Concatenate and cast to float32 (standard for robotics state)
+        state_vec = np.concatenate([qpos, qvel]).astype(np.float32)
+
+        if self.visual_input:
+            # Extract image from 'images' key
+            # Assuming 'cam_high' is the correct camera key
+            image_raw = obs_dict['images']['cam_high']
+            
+            # Ensure image is in (H, W, C) and uint8/float32 (dataset handles ToTensor/Normalize)
+            image = image_raw.astype(np.uint8) 
+            
+            # CRITICAL: Return the tuple (image, state_vec) to match dataset.py
+            return (image, state_vec)
+        else:
+            # If not visual_input, just return the state_vec
+            return state_vec
+
+
+    def reset(self, **kwargs) -> Tuple[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]], Dict]:
+        # The base env returns an observation dictionary
+        obs_dict, info = self.env.reset(**kwargs) 
+        
+        # Process the observation to extract image and/or state
+        processed_obs = self._process_obs(obs_dict)
+        
+        self.num_achieved = 0
+        logging.info("Aloha insertion episode start!")
+
+        return processed_obs, info
+
+    def step(self, action: np.ndarray) -> Tuple[Union[np.ndarray, Tuple[np.ndarray, np.ndarray]], float, bool, Dict]:
+        # The base env returns an observation dictionary
+        obs_dict, reward, terminated, truncated, info = self.env.step(action)
+        done = terminated or truncated
+
+        # Process the observation to extract image and/or state
+        processed_obs = self._process_obs(obs_dict)
+            
+        return processed_obs, reward, done, info
+
+
+# Registration is correct
+register(
+    id="AlohaInsertion-eval-v0",
+    entry_point="aloha_insertion_env:ALOHAWRAPPER",
+    max_episode_steps=1200,
+    reward_threshold=0.0,
+)
+
+
+def get_goal_fn(
+    data_directory: str,
+    goal_conditional: Optional[str] = None,
+    goal_seq_len: Optional[int] = None,
+    seed: Optional[int] = None,
+    train_fraction: Optional[float] = None,
+    unconditional: bool = False,
+    goal_dim: int = 0,
+    visual_input: bool = False,
+) -> Callable[
+    [gym.Env, torch.Tensor, torch.Tensor, torch.Tensor],
+    Union[
+        torch.Tensor,
+        Tuple[torch.Tensor, Dict[str, torch.Tensor]],
+        Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]],
+        None,
+    ],
+]:
+    """
+    Hydra target function to retrieve goal information for policy training.
+    """
+    empty_tensor = torch.zeros(0)
+    
+    # VQ-VAE Pre-training / Unconditional Case
+    if unconditional or goal_dim == 0:
+        return lambda env, state, goal_idx, frame_idx: (empty_tensor, {})
+
+    # Standard VQ-BET / Goal-Conditioned Case 
+    
+    # 1. Load data once for goal extraction
+    # 🔑 CORRECTED: Use LeRobotWrapper instead of InsertionAlohaTrajectoryDataset
+    relay_traj = LeRobotWrapper(
+        repo_id=data_directory, # data_directory is typically the repo_id here
+        episodes=None, # Load all episodes initially
+        window_size=1, # We only need one frame for goal info
+        action_window_size=0,
+        fps=1, # Dummy FPS, not critical here
+        onehot_goals=True, 
+        visual_input=visual_input
+    )
+    
+    train_idx, val_idx = get_split_idx(
+        len(relay_traj),
+        seed=seed,
+        train_fraction=train_fraction or 1.0,
+    )
+    
+    # 2. Pre-fetch the static one-hot goal (assuming single-task insertion)
+    if train_idx:
+        # Note: relay_traj[idx] returns a dictionary from LeRobotWrapper.__getitem__
+        example_data = relay_traj[train_idx[0]]
+        static_onehot_goal = example_data["goals"][0] # Extract the goal tensor
+    else:
+        static_onehot_goal = torch.zeros(goal_dim)
+        
+    goal_fn = lambda env, state, goal_idx, frame_idx: None # Default assignment
+
+    if goal_conditional == "future":
+        assert (
+            goal_seq_len is not None
+        ), "goal_seq_len must be provided if goal_conditional is 'future'"
+        
+        # 🔑 Re-initialize LeRobotWrapper to get the correct sequence length for the goal chunk
+        # Note: This is an expensive operation and often handled more efficiently in real pipelines.
+        # For simplicity, we define a dataset for fetching the long goal sequence.
+        
+        # Create a utility dataset to fetch the goal *chunk* (T_goal frames)
+        goal_sequence_deltas = [-1.0 * i * (1.0 / relay_traj.dataset.meta.fps) for i in range(goal_seq_len - 1, -1, -1)]
+        
+        goal_ds_args = {
+            "repo_id": data_directory,
+            "episodes": train_idx,
+            "window_size": goal_seq_len, # Request T_goal frames
+            "action_window_size": 0,
+            "fps": relay_traj.dataset.meta.fps,
+            "onehot_goals": False, # Goal is the observation chunk itself
+            "visual_input": visual_input,
+        }
+        # In a real setup, you might pre-calculate the indices for the goal chunk and use LeRobotDataset directly.
+        # For this setup, we assume a simple wrapper is sufficient.
+        
+        # We need the base LeRobotDataset for flexible indexing since the wrapper is only for training
+        goal_dataset_raw = LeRobotWrapper(
+            **goal_ds_args
+        ).dataset
+        
+        def future_goal_fn(env, state, goal_idx, frame_idx): 
+            info = {}
+            
+            # The environment expects the one-hot goal at frame 0
+            if frame_idx == 0:
+                env.set_task_goal(static_onehot_goal)
+                info["onehot_goal"] = static_onehot_goal
+            
+            # Goal_idx here is the episode index within the train_idx list.
+            # We fetch the frame that is (episode_length - goal_seq_len) from the trajectory.
+            
+            # Get the starting index in the full LeRobotDataset for this episode
+            start_global_index = goal_dataset_raw.episodes_start_idx[train_idx[goal_idx]]
+            
+            # Get the total length of the episode
+            episode_length = goal_dataset_raw.episodes_len[train_idx[goal_idx]]
+            
+            # Calculate the global index where the goal chunk starts
+            goal_start_global_index = start_global_index + episode_length - goal_seq_len
+            
+            # Fetch the goal chunk (T_goal frames)
+            # This directly uses LeRobotDataset's chunking mechanism via delta_timestamps
+            data = goal_dataset_raw[goal_start_global_index]
+            
+            # Extract observation(s)
+            state_chunk = data["observation.state"].float()
+            
+            if visual_input:
+                image_chunk = data["observation.images.top"]
+                goal_obs = (image_chunk, state_chunk) # Return tuple (Image, State)
+            else:
+                goal_obs = state_chunk # Return state tensor
+            
+            return goal_obs, info
+
+        goal_fn = future_goal_fn
+
+    elif goal_conditional == "onehot":
+
+        def onehot_goal_fn(env, state, goal_idx, frame_idx):
+            if frame_idx == 0:
+                env.set_task_goal(static_onehot_goal)
+                logging.info(f"Setting static onehot goal at episode start.")
+
+            return static_onehot_goal, {}
+
+        goal_fn = onehot_goal_fn
+
+    else:
+        raise ValueError(f"goal_conditional {goal_conditional} not recognized")
+
+    return goal_fn
+
+
+if __name__ == "__main__":
+    env = ALOHAWRAPPER(id="TestEnv", visual_input=True) 
+    processed_obs, info = env.reset()
+    
+    if isinstance(processed_obs, tuple):
+        image_obs, state_obs = processed_obs
+        print(f"Image Observation Shape: {image_obs.shape}, State Observation Shape: {state_obs.shape}")
+    else:
+        print(f"State Observation Shape: {processed_obs.shape}")
+    print("Successfully reset environment.")
+
+    dummy_action = np.zeros(14)
+    obs, reward, done, info = env.step(dummy_action)
+    if isinstance(obs, tuple):
+        image_obs, state_obs = obs
+        print(f"Image Observation Shape: {image_obs.shape}, State Observation Shape: {state_obs.shape}")
+    else:
+        print(f"State Observation Shape: {obs.shape}")
+    print(f"Step reward: {reward}")

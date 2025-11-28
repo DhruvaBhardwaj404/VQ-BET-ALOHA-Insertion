@@ -128,7 +128,7 @@ def main(cfg):
         for goal_idx in range(num_evals):
             if videorecorder is not None:
                 # Video recording is typically only enabled for the first goal (goal_idx == 0)
-                videorecorder.init(enabled=(goal_idx == 0))
+                videorecorder.init(enabled=True)
 
             for _ in range(num_eval_per_goal):
                 obs_stack = deque(maxlen=cfg.eval_window_size)
@@ -247,7 +247,7 @@ def main(cfg):
             torch.cuda.empty_cache()
             gc.collect()
 
-        if epoch % cfg.eval_freq == 0:
+        if epoch % cfg.eval_freq == 0 and epoch !=0 :
             total_loss_dict = {}
             num_batches = 0
             with torch.no_grad():
